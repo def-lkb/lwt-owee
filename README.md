@@ -1,3 +1,9 @@
+This fork introduces primitives to introspect state and generate traces using [Owee](https://github.com/def-lkb/owee).
+
+Relevant parts:
+- https://github.com/def-lkb/lwt-owee/blob/master/src/unix/lwt_unix.mli#L1199
+- https://github.com/def-lkb/lwt-owee/blob/master/src/core/lwt.mli#L487
+
 # Lwt: lightweight thread library for OCaml
 
 --------------------------------------------------------------------------
