@@ -108,11 +108,13 @@ and cancel =
   | Cancel_links of a_threads
       (* Cancel all these threads. *)
 
+and 'a action = 'a thread_state -> unit
+
 (* Type of set of waiters: *)
 and 'a waiter_set =
   | Empty
-  | Removable of ('a thread_state -> unit) option ref
-  | Immutable of ('a thread_state -> unit)
+  | Removable of Owee_location.t * 'a action option ref
+  | Immutable of Owee_location.t * 'a action
   | Append of 'a waiter_set * 'a waiter_set
 
 and 'a cancel_handler_set =
@@ -197,12 +199,12 @@ let rec run_waiters_rec state ws rem =
   match ws with
     | Empty ->
         run_waiters_rec_next state rem
-    | Immutable f ->
+    | Immutable (_,f) ->
         f state;
         run_waiters_rec_next state rem
-    | Removable { contents = None } ->
+    | Removable (_, { contents = None }) ->
         run_waiters_rec_next state rem
-    | Removable { contents = Some f } ->
+    | Removable (_, { contents = Some f }) ->
         f state;
         run_waiters_rec_next state rem
     | Append (ws1, ws2) ->
@@ -412,7 +414,7 @@ let chs_append l1 l2 =
 
 (* Remove all disbaled waiters of a waiter set: *)
 let rec cleanup = function
-  | Removable { contents = None } ->
+  | Removable (_, { contents = None }) ->
       Empty
   | Append (l1, l2) ->
       append (cleanup l1) (cleanup l2)
@@ -621,8 +623,8 @@ let add_waiter sleeper waiter =
                         | Empty -> waiter
                         | ws -> Append (waiter, ws))
 
-let add_immutable_waiter sleeper waiter =
-  add_waiter sleeper (Immutable waiter)
+let add_immutable_waiter sleeper f waiter =
+  add_waiter sleeper (Immutable (Owee_location.extract f, waiter))
 
 let on_cancel t f =
   match (repr t).state with
@@ -648,7 +650,7 @@ let bind t f =
     | Sleep sleeper ->
         let res = temp t in
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; connect res (try f v with exn -> fail exn)
              | Fail _ as state -> fast_connect res state
@@ -670,7 +672,7 @@ let map f t =
     | Sleep sleeper ->
         let res = temp t in
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; fast_connect res (try Return (f v) with exn -> Fail exn)
              | Fail _ as state -> fast_connect res state
@@ -692,7 +694,7 @@ let catch x f =
     | Sleep sleeper ->
         let res = temp t in
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return _ as state -> fast_connect res state
              | Fail exn -> current_data := data; connect res (try f exn with exn -> fail exn)
@@ -709,7 +711,7 @@ let on_success t f =
         ()
     | Sleep sleeper ->
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; call_unsafe f v
              | Fail exn -> ()
@@ -725,7 +727,7 @@ let on_failure t f =
         call_unsafe f exn
     | Sleep sleeper ->
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> ()
              | Fail exn -> current_data := data; call_unsafe f exn
@@ -741,7 +743,7 @@ let on_termination t f =
         call_unsafe f ()
     | Sleep sleeper ->
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; call_unsafe f ()
              | Fail exn -> current_data := data; call_unsafe f ()
@@ -757,7 +759,7 @@ let on_any t f g =
         call_unsafe g exn
     | Sleep sleeper ->
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; call_unsafe f v
              | Fail exn -> current_data := data; call_unsafe g exn
@@ -775,7 +777,7 @@ let try_bind x f g =
     | Sleep sleeper ->
         let res = temp t in
         let data = !current_data in
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return v -> current_data := data; connect res (try f v with exn -> fail exn)
              | Fail exn -> current_data := data; connect res (try g exn with exn -> fail exn)
@@ -799,7 +801,7 @@ let async f =
     | Fail exn ->
         !async_exception_hook exn
     | Sleep sleeper ->
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper f
           (function
              | Return _ -> ()
              | Fail exn -> !async_exception_hook exn
@@ -814,7 +816,7 @@ let ignore_result t =
     | Fail e ->
         raise e
     | Sleep sleeper ->
-        add_immutable_waiter sleeper
+        add_immutable_waiter sleeper ignore
           (function
              | Return _ -> ()
              | Fail exn -> !async_exception_hook exn
@@ -828,7 +830,7 @@ let protected t =
         let res = thread (task_aux ()) in
         (* We use [fact_connect_if] because when [res] is canceled, it
            will always terminate before [t]. *)
-        add_immutable_waiter sleeper (fast_connect_if res);
+        add_immutable_waiter sleeper ignore (fast_connect_if res);
         res
     | Return _ | Fail _ ->
         t
@@ -839,7 +841,7 @@ let no_cancel t =
   match (repr t).state with
     | Sleep sleeper ->
         let res = thread (wait_aux ()) in
-        add_immutable_waiter sleeper (fast_connect res);
+        add_immutable_waiter sleeper ignore (fast_connect res);
         res
     | Return _ | Fail _ ->
         t
@@ -881,8 +883,8 @@ let remove_waiters l =
              ())
     l
 
-let add_removable_waiter threads waiter =
-  let node = Removable waiter in
+let add_removable_waiter threads f waiter =
+  let node = Removable (Owee_location.extract f, waiter) in
   List.iter
     (fun t ->
        match (repr t).state with
@@ -916,7 +918,7 @@ let choose l =
          since all other waiters have been removed: *)
       fast_connect res state
     in
-    add_removable_waiter l waiter;
+    add_removable_waiter l ignore waiter;
     res
   end
 
@@ -940,7 +942,7 @@ let nchoose_sleep l =
     remove_waiters l;
     nchoose_terminate res [] l
   in
-  add_removable_waiter l waiter;
+  add_removable_waiter l ignore waiter;
   res
 
 let nchoose l =
@@ -989,7 +991,7 @@ let nchoose_split_sleep l =
     remove_waiters l;
     nchoose_split_terminate res [] [] l
   in
-  add_removable_waiter l waiter;
+  add_removable_waiter l ignore waiter;
   res
 
 let nchoose_split l =
@@ -1054,7 +1056,7 @@ let pick l =
       List.iter cancel l;
       fast_connect res state
     in
-    add_removable_waiter l waiter;
+    add_removable_waiter l ignore waiter;
     res
   end
 
@@ -1067,7 +1069,7 @@ let npick_sleep l =
     List.iter cancel l;
     nchoose_terminate res [] l
   in
-  add_removable_waiter l waiter;
+  add_removable_waiter l ignore waiter;
   res
 
 let npick threads =
@@ -1126,7 +1128,7 @@ let join l =
         match (repr t).state with
           | Sleep sleeper ->
               incr sleeping;
-              add_immutable_waiter sleeper handle_result;
+              add_immutable_waiter sleeper ignore handle_result;
               init rest
           | Fail _ as state -> begin
               match !return_state with
@@ -1215,6 +1217,7 @@ let backtrace_bind add_loc t f =
         let res = temp t in
         let data = !current_data in
         add_immutable_waiter sleeper
+          f
           (function
              | Return v -> current_data := data; connect res (try f v with exn -> fail (add_loc exn))
              | Fail exn -> fast_connect res (Fail(add_loc exn))
@@ -1234,6 +1237,7 @@ let backtrace_catch add_loc x f =
         let res = temp t in
         let data = !current_data in
         add_immutable_waiter sleeper
+          f
           (function
              | Return _ as state -> fast_connect res state
              | Fail exn -> current_data := data; connect res (try f exn with exn -> fail (add_loc exn))
@@ -1253,6 +1257,7 @@ let backtrace_try_bind add_loc x f g =
         let res = temp t in
         let data = !current_data in
         add_immutable_waiter sleeper
+          f
           (function
              | Return v -> current_data := data; connect res (try f v with exn -> fail (add_loc exn))
              | Fail exn -> current_data := data; connect res (try g exn with exn -> fail (add_loc exn))
@@ -1305,3 +1310,17 @@ module Infix = struct
   let (<&>) = (<&>)
   let (<?>) = (<?>)
 end
+
+let rec waiter_trace acc = function
+  | Empty -> acc
+  | Removable (l, _) | Immutable (l, _) ->
+    (l :: acc)
+  | Append (a,b) ->
+    waiter_trace (waiter_trace acc a) b
+
+let direct_trace t =
+  match (repr t).state with
+  | Return _ -> []
+  | Fail _ -> []
+  | Sleep { waiters } -> waiter_trace [] waiters
+  | Repr _ -> assert false
