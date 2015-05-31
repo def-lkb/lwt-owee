@@ -484,4 +484,7 @@ val backtrace_catch : (exn -> exn) -> (unit -> 'a t) -> (exn -> 'a t) -> 'a t
 val backtrace_try_bind : (exn -> exn) -> (unit -> 'a t) -> ('a -> 'b t) -> (exn -> 'b t) -> 'b t
 val backtrace_finalize : (exn -> exn) -> (unit -> 'a t) -> (unit -> unit t) -> 'a t
 
-val direct_trace : _ t -> Owee_location.t list
+val user_location : _ t -> Owee_location.t
+
+type packed = P : _ t -> packed
+val successors : _ t -> packed list
