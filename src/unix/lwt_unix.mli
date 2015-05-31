@@ -1187,6 +1187,19 @@ val set_affinity : ?pid : int -> int list -> unit
   (** [set_affinity ?pid cpus] sets the list of CPUs the given process
       is allowed to run on. *)
 
+(** {2 Tracing} *)
+
+type trace = Trace of Owee_location.t * trace list
+  (** Compute the equivalent of a stacktrace in Lwt.  In stack-based
+      evaluation, the trace is the list of all return addresses, in other
+      words, all the continuations from the current point.
+      The corresponding structure in lwt, made from all the "binds" sleeping on
+      the current thread, has the shape of a tree. *)
+
+val trace : unit -> trace Lwt.t
+  (** Return the trace of the current context *)
+
+
 (**/**)
 
 val run : 'a Lwt.t -> 'a

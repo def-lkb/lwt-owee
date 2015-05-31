@@ -2081,6 +2081,35 @@ let get_affinity ?(pid=0) () = stub_get_affinity pid
 let set_affinity ?(pid=0) l = stub_set_affinity pid l
 
 (* +-----------------------------------------------------------------+
+   | Tracing                                                         |
+   +-----------------------------------------------------------------+ *)
+
+type trace = Trace of Owee_location.t * trace list
+  (** Compute the equivalent of a stacktrace in Lwt.  In stack-based
+      evaluation, the trace is the list of all return addresses, in other
+      words, all the continuations from the current point.
+      The corresponding structure in lwt, made from all the "binds" sleeping on
+      the current thread, has the shape of a tree. *)
+
+let rec extract_trace (Lwt.P m) =
+  Trace (Lwt.user_location m,
+        List.map extract_trace (Lwt.successors m))
+
+let trace () =
+  (** Logic:
+      - yield a first time so that the caller code constructs the tail of the
+        computation (by working around Lwt eager evaluation)
+      - introspect structure of the computation after the second yield,
+        but before its execution (by waiting on the second yield)
+     *)
+  let result = ref (Trace (Owee_location.extract ignore, []))  in
+  let once = yield () in
+  let twice = once >>= yield >|= fun () -> !result in
+  Lwt.on_success once (fun () -> result := extract_trace (Lwt.P twice));
+  twice
+
+
+(* +-----------------------------------------------------------------+
    | Error printing                                                  |
    +-----------------------------------------------------------------+ *)
 
